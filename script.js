@@ -10,7 +10,7 @@ const cookieParser = require("cookie-parser");
 
 const allowedOrigins = [
   "http://localhost:3000", 
-  "https://task-flow-client.vercel.app" 
+  "https://taskflow-server-qmtw.onrender.com" 
 ];
 
 const app = express();
@@ -34,4 +34,5 @@ app.use("/api/upload", uploadRoutes);
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
 
