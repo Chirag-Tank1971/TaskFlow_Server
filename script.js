@@ -8,10 +8,6 @@ const taskRoutes = require("./routes/taskRoutes");
 const uploadRoutes = require("./routes/uploadRoutes");
 const cookieParser = require("cookie-parser");
 
-const allowedOrigins = [
-  "http://localhost:3000", 
-  "https://taskflow-server-qmtw.onrender.com" 
-];
 
 const app = express();
 app.use(express.json());
@@ -20,6 +16,7 @@ app.use(cors({
     origin: "http://localhost:3000",
     credentials: true 
 }));
+app.use(cors({ origin: "*"}));
 app.use(cookieParser());
 
 // Connect to MongoDB
@@ -34,5 +31,6 @@ app.use("/api/upload", uploadRoutes);
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
 
 
