@@ -1,5 +1,5 @@
 const express = require("express");
-const { getTasks, getTasksByAgent, deleteTasks } = require("../controllers/taskController"); // Import task controllers
+const { getTasks, getTasksByAgent, deleteTasks, updateTasks } = require("../controllers/taskController"); // Import task controllers
 const authenticate = require("../middleware/authMiddleware"); // Import authentication middleware
 
 const router = express.Router(); // Create an Express router instance
@@ -22,4 +22,5 @@ router.delete("/:taskId", authenticate , deleteTasks)
 router.post("/:taskId", authenticate , updateTasks);
 
 module.exports = router; // Export the router for use in the main app
+
 
