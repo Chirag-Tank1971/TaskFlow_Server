@@ -85,4 +85,3 @@ const updateTasks =async (req,res) => {
 }
 
 module.exports = { getTasks, getTasksByAgent, deleteTasks, updateTasks }; // Export the functions for use in routes
-
