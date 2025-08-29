@@ -63,4 +63,26 @@ const deleteTasks = async(req,res) => {
    }
 }
 
-module.exports = { getTasks, getTasksByAgent, deleteTasks }; // Export the functions for use in routes
+const updateTasks =async (req,res) => {
+    try {
+      const {taskId} = req.params
+      const {status} = req.body
+      try {
+          const updatedTask = await Task.findOneAndUpdate(
+            {_id:taskId} ,
+            {status},
+            {new:true}
+          )
+          res.status(200).json(updatedTask)
+      } catch (error) {
+        console.error("Update Tasks Error:", error);
+        res.status(500).json({ message: "Server error" });
+      }
+   }catch(error){
+    console.error("Update Tasks Error:", error);
+      res.status(500).json({ message: "Server error" });
+   }
+}
+
+module.exports = { getTasks, getTasksByAgent, deleteTasks, updateTasks }; // Export the functions for use in routes
+
