@@ -19,4 +19,7 @@ router.get("/", authenticate, getTasks);
 router.get("/:agentId", authenticate, getTasksByAgent);
 
 router.delete("/:taskId", authenticate , deleteTasks)
+router.post("/:taskId", authenticate , updateTasks);
+
 module.exports = router; // Export the router for use in the main app
+
