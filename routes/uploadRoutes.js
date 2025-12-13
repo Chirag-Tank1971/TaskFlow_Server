@@ -5,6 +5,7 @@ const {
   getUploadHistory,
   getUploadDetails,
 } = require("../controllers/uploadStatsController"); // Import upload stats controller
+const { getUploadProgress } = require("../controllers/progressController"); // Import progress controller
 const authenticate = require("../middleware/authMiddleware"); // Import authentication middleware
 const upload = require("../utils/multerConfig"); // Import multer configuration for file uploads
 
@@ -17,6 +18,13 @@ const router = express.Router(); // Create an Express router instance
  * @param   file - CSV file containing task data
  */
 router.post("/", authenticate, upload.single("file"), uploadCSV);
+
+/**
+ * @route   GET /api/upload/progress/:jobId
+ * @desc    Get real-time upload progress via Server-Sent Events
+ * @access  Private (requires authentication)
+ */
+router.get("/progress/:jobId", authenticate, getUploadProgress);
 
 /**
  * @route   GET /api/upload/stats

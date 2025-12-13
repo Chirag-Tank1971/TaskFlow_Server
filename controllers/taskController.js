@@ -7,7 +7,11 @@ const Agent = require("../models/Agent"); // Import the Agent model (needed for 
  */
 const getTasks = async (req, res) => {
   try {
-    const tasks = await Task.find().populate("agent", "name email"); // Fetch tasks with agent details
+    // Support category filter
+    const { category } = req.query;
+    const query = category ? { category } : {};
+    
+    const tasks = await Task.find(query).populate("agent", "name email"); // Fetch tasks with agent details
     res.json(tasks); // Send the retrieved tasks as a JSON response
   } catch (err) {
     console.error("Fetch Tasks Error:", err);
@@ -30,8 +34,15 @@ const getTasksByAgent = async (req, res) => {
       return res.json([]);
     }
 
+    // Support category filter
+    const { category } = req.query;
+    const query = { agent: agentId };
+    if (category) {
+      query.category = category;
+    }
+    
     // Fetch tasks assigned to the given agent and populate agent details
-    const tasks = await Task.find({ agent: agentId }).populate("agent", "name email");
+    const tasks = await Task.find(query).populate("agent", "name email");
 
     // Return tasks (empty array if none found) - this is normal, not an error
     res.json(tasks || []);

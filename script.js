@@ -9,6 +9,7 @@ const agentStatsRoutes = require("./routes/agentStatsRoutes");
 const taskRoutes = require("./routes/taskRoutes");
 const uploadRoutes = require("./routes/uploadRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
+const categorizationRoutes = require("./routes/categorizationRoutes");
 const cookieParser = require("cookie-parser");
 
 // CORS Configuration - Production-ready with environment variables
@@ -114,6 +115,7 @@ app.use("/api/agent", agentStatsRoutes); // Agent-specific stats routes
 app.use("/api/tasks", taskRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/categorization", categorizationRoutes); // AI categorization routes
 
 const PORT = process.env.PORT || 5000;
 

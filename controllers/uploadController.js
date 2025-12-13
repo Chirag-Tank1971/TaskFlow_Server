@@ -4,88 +4,37 @@ const Task = require("../models/Task"); // Import the Task model
 const Agent = require("../models/Agent"); // Import the Agent model
 const Upload = require("../models/Upload"); // Import the Upload model
 const User = require("../models/User"); // Import the User model
+const { categorizeTasksBatch } = require("../services/categorizationService"); // Import categorization service
+const {
+  generateJobId,
+  initializeProgress,
+  updateProgress,
+  completeProgress,
+  failProgress
+} = require("../services/progressTracker"); // Import progress tracker
 
 /**
- * Handles CSV file upload, parses the data, validates it, and assigns tasks to agents in a round-robin manner.
- * Tracks upload details in the Upload model for analytics and history.
+ * Background processing function for CSV upload
+ * Processes file, categorizes tasks, and saves to database
  */
-const uploadCSV = async (req, res) => {
-  const startTime = Date.now(); // Track processing start time
-  let uploadRecord = null; // Store upload record for updates
+const processUpload = async (jobId, filePath, filename, fileSize, mimeType, userId, agents) => {
+  const startTime = Date.now();
+  let uploadRecord = null;
 
   try {
-    // Ensure a file is provided
-    if (!req.file) {
-      return res.status(400).json({ message: "No file uploaded" });
-    }
-
-    // Get user from request (set by auth middleware)
-    if (!req.user || !req.user.email) {
-      // Cleanup file if authentication fails
-      if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(401).json({ message: "Authentication required" });
-    }
-
-    // Normalize email for consistent lookup (production-ready)
-    const normalizedEmail = req.user.email.toLowerCase().trim();
-
-    // Find user by email to get user ID
-    // Try exact match first (faster), then case-insensitive if needed
-    // Only admin users (not agents) can upload CSV files
-    let user = await User.findOne({ email: normalizedEmail });
-    
-    // If not found with exact match, try case-insensitive search (for legacy data)
-    if (!user) {
-      // Escape special regex characters for security
-      const escapedEmail = normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      user = await User.findOne({ 
-        email: { $regex: new RegExp(`^${escapedEmail}$`, 'i') }
-      });
-    }
-
-    if (!user) {
-      // Cleanup file if user not found
-      if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(404).json({ 
-        message: "User not found. Please ensure you are logged in as an admin user." 
-      });
-    }
-
-    // Additional check: Verify this is not an agent trying to upload
-    // Agents have emails ending with @agent.com
-    if (normalizedEmail.endsWith("@agent.com")) {
-      if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(403).json({ 
-        message: "Access denied. Only admin users can upload CSV files." 
-      });
-    }
-
-    // Fetch available agents from the database
-    const agents = await Agent.find();
-    if (agents.length === 0) {
-      // Cleanup file if no agents
-      if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(400).json({ message: "No agents available" });
-    }
-
-    // Create upload record with initial status
-    uploadRecord = new Upload({
-      filename: req.file.originalname,
-      fileSize: req.file.size,
-      mimeType: req.file.mimetype,
-      uploadedBy: user._id,
-      status: "processing",
-      rowCount: 0,
-      tasksCreated: 0,
+    // Update progress: parsing CSV
+    updateProgress(jobId, {
+      status: 'parsing',
+      currentStep: 'Parsing CSV file...',
+      progress: 5
     });
-    await uploadRecord.save();
 
-    const tasks = []; // Array to store parsed tasks
-    let headersValid = false; // Flag to validate CSV headers
-    let validationError = null; // Store validation error
+    const tasks = [];
+    let headersValid = false;
+    let validationError = null;
 
     // Create a readable stream for the uploaded CSV file and parse it
-    const stream = fs.createReadStream(req.file.path).pipe(csv());
+    const stream = fs.createReadStream(filePath).pipe(csv());
 
     // Validate CSV headers
     stream.on("headers", (headers) => {
@@ -96,22 +45,19 @@ const uploadCSV = async (req, res) => {
 
       if (!headersValid) {
         validationError = "Invalid CSV format. Required headers: FirstName, Phone, Notes";
-        stream.destroy(); // Stop reading the file
+        stream.destroy();
       }
     });
 
     // Process each row in the CSV file
     stream.on("data", (row) => {
-      if (validationError) return; // Skip processing if validation failed
+      if (validationError) return;
 
       const normalizedRow = {};
-
-      // Normalize keys to lowercase to ensure case insensitivity
       for (const key in row) {
         normalizedRow[key.toLowerCase()] = row[key];
       }
 
-      // Push the task to the array
       tasks.push({
         firstName: normalizedRow["firstname"],
         phone: normalizedRow["phone"],
@@ -132,66 +78,160 @@ const uploadCSV = async (req, res) => {
     if (validationError || !headersValid) {
       const processingTime = Date.now() - startTime;
       
-      // Update upload record with failure
-      if (uploadRecord) {
-        uploadRecord.status = "failed";
-        uploadRecord.errorMessage = validationError || "Invalid CSV format";
-        uploadRecord.processingTime = processingTime;
-        await uploadRecord.save();
-      }
+      // Create upload record with failure
+      uploadRecord = new Upload({
+        filename,
+        fileSize,
+        mimeType,
+        uploadedBy: userId,
+        status: "failed",
+        errorMessage: validationError || "Invalid CSV format",
+        rowCount: 0,
+        tasksCreated: 0,
+        processingTime,
+      });
+      await uploadRecord.save();
 
       // Cleanup file
-      if (req.file) fs.unlinkSync(req.file.path);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
 
-      return res.status(400).json({
-        message: validationError || "Invalid CSV format. Required headers: FirstName, Phone, Notes",
-      });
+      failProgress(jobId, validationError || "Invalid CSV format");
+      return;
     }
 
-    // Update row count
-    uploadRecord.rowCount = tasks.length;
+    // Create upload record
+    uploadRecord = new Upload({
+      filename,
+      fileSize,
+      mimeType,
+      uploadedBy: userId,
+      status: "processing",
+      rowCount: tasks.length,
+      tasksCreated: 0,
+    });
     await uploadRecord.save();
 
+    // Update progress: CSV parsed, starting categorization
+    updateProgress(jobId, {
+      status: 'categorizing',
+      currentStep: `Starting categorization for ${tasks.length} tasks...`,
+      progress: 20,
+      totalTasks: tasks.length,
+      processedTasks: 0
+    });
+
+    // Categorize tasks using AI with progress callback
+    let categorizedTasks = tasks;
+    let rateLimitHit = false;
+    let categorizedCount = 0;
+    let defaultCount = 0;
+    
+    try {
+      console.log(`[Upload] Starting categorization for ${tasks.length} tasks`);
+      
+      // Progress callback for real-time updates
+      // Use closure to track counts
+      let currentCategorizedCount = 0;
+      let currentDefaultCount = 0;
+      
+      const progressCallback = (progressData) => {
+        // Update local counts if provided
+        if (progressData.categorizedTasks !== undefined) {
+          currentCategorizedCount = progressData.categorizedTasks;
+        }
+        if (progressData.defaultTasks !== undefined) {
+          currentDefaultCount = progressData.defaultTasks;
+        }
+        
+        updateProgress(jobId, {
+          status: progressData.step || 'categorizing',
+          currentStep: progressData.currentStep || 'Categorizing tasks...',
+          progress: Math.min(90, 20 + Math.round((progressData.processedTasks / tasks.length) * 70)),
+          processedTasks: progressData.processedTasks || 0,
+          categorizedTasks: currentCategorizedCount,
+          defaultTasks: currentDefaultCount,
+          rateLimitHit: progressData.rateLimitHit || false
+        });
+      };
+      
+      const categorizationResponse = await categorizeTasksBatch(tasks, progressCallback);
+      
+      // Extract results and metadata
+      const categorizationResults = categorizationResponse.results || [];
+      rateLimitHit = categorizationResponse.rateLimitHit || false;
+      categorizedCount = categorizationResponse.categorizedCount || 0;
+      defaultCount = categorizationResponse.defaultCount || 0;
+      
+      // Merge categorization results with tasks
+      categorizedTasks = tasks.map((task, index) => ({
+        ...task,
+        category: categorizationResults[index]?.category || "General",
+        categorySource: categorizationResults[index]?.source || "default",
+        categorizedAt: categorizationResults[index]?.source === "ai" ? new Date() : null,
+        categoryConfidence: categorizationResults[index]?.confidence || null
+      }));
+      
+      console.log(`[Upload] Successfully categorized ${categorizedCount} tasks, ${defaultCount} set to default`);
+      
+      if (rateLimitHit) {
+        console.warn(`[Upload] Rate limit hit during categorization. ${defaultCount} tasks set to default category.`);
+      }
+    } catch (error) {
+      console.error(`[Upload] Categorization error (using defaults):`, error.message);
+      categorizedTasks = tasks.map(task => ({
+        ...task,
+        category: "General",
+        categorySource: "default",
+        categorizedAt: null,
+        categoryConfidence: null
+      }));
+      defaultCount = tasks.length;
+    }
+
+    // Update progress: saving tasks
+    updateProgress(jobId, {
+      status: 'saving',
+      currentStep: 'Saving tasks to database...',
+      progress: 95,
+      processedTasks: tasks.length
+    });
+
     // Assign tasks to agents in a round-robin manner
-    const distributedTasks = tasks.map((task, index) => ({
+    const distributedTasks = categorizedTasks.map((task, index) => ({
       ...task,
-      agent: agents[index % agents.length]._id, // Assign agents in a cyclic order
+      agent: agents[index % agents.length]._id,
     }));
 
     // Bulk insert tasks into the database
     const createdTasks = await Task.insertMany(distributedTasks);
-
-    // Extract task IDs for upload record
     const taskIds = createdTasks.map((task) => task._id);
-
-    // Calculate processing time
     const processingTime = Date.now() - startTime;
 
     // Update upload record with success
     uploadRecord.status = "success";
     uploadRecord.tasksCreated = createdTasks.length;
     uploadRecord.processingTime = processingTime;
-    uploadRecord.tasks = taskIds; // Store task IDs
+    uploadRecord.tasks = taskIds;
     await uploadRecord.save();
 
     // Delete the uploaded file after processing
-    fs.unlinkSync(req.file.path);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
 
-    // Send response with success message and upload details
-    res.json({
-      message: "File uploaded and tasks distributed successfully",
-      upload: {
-        id: uploadRecord._id,
-        filename: uploadRecord.filename,
-        tasksCreated: uploadRecord.tasksCreated,
-        rowCount: uploadRecord.rowCount,
-        processingTime: uploadRecord.processingTime,
-        status: uploadRecord.status,
-      },
-      tasks: distributedTasks,
+    // Mark progress as completed
+    completeProgress(jobId, {
+      processedTasks: tasks.length,
+      categorizedTasks: categorizedCount,
+      defaultTasks: defaultCount,
+      rateLimitHit,
+      uploadId: uploadRecord._id.toString()
     });
+
   } catch (err) {
-    console.error("CSV Upload Error:", err);
+    console.error("CSV Upload Processing Error:", err);
 
     // Update upload record with error if it exists
     if (uploadRecord) {
@@ -205,6 +245,106 @@ const uploadCSV = async (req, res) => {
         console.error("Error updating upload record:", updateErr);
       }
     }
+
+    // Cleanup file if an error occurs
+    if (filePath && fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (unlinkErr) {
+        console.error("Error deleting file:", unlinkErr);
+      }
+    }
+
+    failProgress(jobId, err.message || "Server error during processing");
+  }
+};
+
+/**
+ * Handles CSV file upload, returns jobId immediately and processes in background
+ * Tracks upload details in the Upload model for analytics and history.
+ */
+const uploadCSV = async (req, res) => {
+  try {
+    // Ensure a file is provided
+    if (!req.file) {
+      return res.status(400).json({ message: "No file uploaded" });
+    }
+
+    // Get user from request (set by auth middleware)
+    if (!req.user || !req.user.email) {
+      // Cleanup file if authentication fails
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(401).json({ message: "Authentication required" });
+    }
+
+    // Normalize email for consistent lookup (production-ready)
+    const normalizedEmail = req.user.email.toLowerCase().trim();
+
+    // Find user by email to get user ID
+    let user = await User.findOne({ email: normalizedEmail });
+    
+    // If not found with exact match, try case-insensitive search (for legacy data)
+    if (!user) {
+      const escapedEmail = normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      user = await User.findOne({ 
+        email: { $regex: new RegExp(`^${escapedEmail}$`, 'i') }
+      });
+    }
+
+    if (!user) {
+      // Cleanup file if user not found
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(404).json({ 
+        message: "User not found. Please ensure you are logged in as an admin user." 
+      });
+    }
+
+    // Additional check: Verify this is not an agent trying to upload
+    if (normalizedEmail.endsWith("@agent.com")) {
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(403).json({ 
+        message: "Access denied. Only admin users can upload CSV files." 
+      });
+    }
+
+    // Fetch available agents from the database
+    const agents = await Agent.find();
+    if (agents.length === 0) {
+      // Cleanup file if no agents
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(400).json({ message: "No agents available" });
+    }
+
+    // Generate job ID for progress tracking
+    const jobId = generateJobId();
+    
+    // Initialize progress (estimate total tasks - will be updated after parsing)
+    // We'll estimate based on file size (rough estimate: ~100 bytes per row)
+    const estimatedTasks = Math.max(1, Math.floor(req.file.size / 100));
+    initializeProgress(jobId, estimatedTasks);
+
+    // Start background processing (non-blocking)
+    processUpload(
+      jobId,
+      req.file.path,
+      req.file.originalname,
+      req.file.size,
+      req.file.mimetype,
+      user._id,
+      agents
+    ).catch(err => {
+      console.error(`[Upload] Background processing error for job ${jobId}:`, err);
+    });
+
+    // Return jobId immediately for progress tracking
+    res.json({
+      message: "File upload started. Processing in background...",
+      jobId: jobId,
+      status: "processing"
+    });
+
+  } catch (err) {
+    console.error("CSV Upload Error:", err);
 
     // Cleanup file if an error occurs
     if (req.file && fs.existsSync(req.file.path)) {
