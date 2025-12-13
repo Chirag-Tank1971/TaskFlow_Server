@@ -43,6 +43,43 @@ const isValidOrigin = (origin) => {
   }
 };
 
+// Check if origin matches Vercel preview pattern
+const isVercelPreview = (origin) => {
+  try {
+    const url = new URL(origin);
+    // Vercel preview URLs: *.vercel.app
+    return url.hostname.endsWith('.vercel.app');
+  } catch {
+    return false;
+  }
+};
+
+// Check if origin matches allowed list or patterns
+const matchesAllowedOrigin = (origin) => {
+  // Exact match
+  if (allowedOrigins.includes(origin)) {
+    return true;
+  }
+  
+  // Vercel preview URLs (allow all *.vercel.app)
+  if (isVercelPreview(origin)) {
+    return true;
+  }
+  
+  // Check for wildcard patterns in allowedOrigins (e.g., "*.example.com")
+  for (const allowed of allowedOrigins) {
+    if (allowed.includes('*')) {
+      const pattern = allowed.replace(/\./g, '\\.').replace(/\*/g, '.*');
+      const regex = new RegExp(`^${pattern}$`);
+      if (regex.test(origin)) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
+};
+
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -69,8 +106,8 @@ app.use(cors({
       return callback(new Error("Invalid origin format"), false);
     }
     
-    // Check if origin is in allowed list
-    if (allowedOrigins.includes(origin)) {
+    // Check if origin matches allowed list or patterns (including Vercel preview URLs)
+    if (matchesAllowedOrigin(origin)) {
       return callback(null, true);
     }
     
