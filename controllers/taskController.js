@@ -1,5 +1,6 @@
 const Task = require("../models/Task"); // Import the Task model
 const Agent = require("../models/Agent"); // Import the Agent model (needed for agent existence check)
+const mongoose = require("mongoose"); // For ObjectId validation
 
 /**
  * Retrieves all tasks from the database.
@@ -155,4 +156,277 @@ const updateTasks = async (req, res) => {
   }
 };
 
-module.exports = { getTasks, getTasksByAgent, deleteTasks, updateTasks }; // Export the functions for use in routes
+/**
+ * Bulk delete tasks - Production ready with authorization and validation
+ * Agents can only delete their own tasks
+ */
+const bulkDeleteTasks = async (req, res) => {
+  try {
+    const { taskIds } = req.body;
+
+    // Input validation
+    if (!taskIds || !Array.isArray(taskIds)) {
+      return res.status(400).json({ 
+        message: "taskIds must be an array" 
+      });
+    }
+
+    if (taskIds.length === 0) {
+      return res.status(400).json({ 
+        message: "At least one task ID is required" 
+      });
+    }
+
+    // Limit batch size for performance and security
+    const MAX_BATCH_SIZE = 100;
+    if (taskIds.length > MAX_BATCH_SIZE) {
+      return res.status(400).json({ 
+        message: `Maximum ${MAX_BATCH_SIZE} tasks can be deleted at once` 
+      });
+    }
+
+    // Validate all taskIds are valid ObjectIds
+    const invalidIds = taskIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+    if (invalidIds.length > 0) {
+      return res.status(400).json({ 
+        message: "Invalid task ID format", 
+        invalidIds 
+      });
+    }
+
+    // Get agent ID from user (assuming email-based identification)
+    const userEmail = req.user?.email;
+    if (!userEmail || !userEmail.toLowerCase().endsWith("@agent.com")) {
+      return res.status(403).json({ 
+        message: "Only agents can perform bulk operations" 
+      });
+    }
+
+    // Find agent by email
+    const agent = await Agent.findOne({ 
+      email: userEmail.toLowerCase().trim() 
+    });
+
+    if (!agent) {
+      return res.status(404).json({ 
+        message: "Agent not found" 
+      });
+    }
+
+    // Find all tasks that belong to this agent
+    const tasks = await Task.find({ 
+      _id: { $in: taskIds },
+      agent: agent._id 
+    });
+
+    if (tasks.length === 0) {
+      return res.status(404).json({ 
+        message: "No tasks found or you don't have permission to delete these tasks" 
+      });
+    }
+
+    // Check if all requested tasks were found (authorization check)
+    const foundTaskIds = tasks.map(t => t._id.toString());
+    const notFoundIds = taskIds.filter(id => !foundTaskIds.includes(id));
+    
+    if (notFoundIds.length > 0) {
+      return res.status(403).json({ 
+        message: "Some tasks were not found or you don't have permission to delete them",
+        notFoundIds,
+        foundCount: foundTaskIds.length,
+        requestedCount: taskIds.length
+      });
+    }
+
+    // Delete all tasks
+    const deleteResult = await Task.deleteMany({ 
+      _id: { $in: taskIds },
+      agent: agent._id 
+    });
+
+    res.status(200).json({
+      message: `Successfully deleted ${deleteResult.deletedCount} task(s)`,
+      deletedCount: deleteResult.deletedCount,
+      deletedTaskIds: taskIds
+    });
+  } catch (error) {
+    console.error("Bulk Delete Tasks Error:", error);
+    
+    // Handle validation errors
+    if (error.name === "ValidationError") {
+      return res.status(400).json({ 
+        message: "Validation error", 
+        errors: error.errors 
+      });
+    }
+
+    res.status(500).json({ 
+      message: "Server error during bulk delete operation" 
+    });
+  }
+};
+
+/**
+ * Bulk update task status - Production ready with authorization and validation
+ * Agents can only update their own tasks
+ */
+const bulkUpdateTaskStatus = async (req, res) => {
+  try {
+    const { taskIds, status } = req.body;
+
+    // Input validation
+    if (!taskIds || !Array.isArray(taskIds)) {
+      return res.status(400).json({ 
+        message: "taskIds must be an array" 
+      });
+    }
+
+    if (taskIds.length === 0) {
+      return res.status(400).json({ 
+        message: "At least one task ID is required" 
+      });
+    }
+
+    if (!status) {
+      return res.status(400).json({ 
+        message: "Status is required" 
+      });
+    }
+
+    const validStatuses = ["pending", "in-progress", "completed"];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        message: `Invalid status. Must be one of: ${validStatuses.join(", ")}` 
+      });
+    }
+
+    // Limit batch size for performance and security
+    const MAX_BATCH_SIZE = 100;
+    if (taskIds.length > MAX_BATCH_SIZE) {
+      return res.status(400).json({ 
+        message: `Maximum ${MAX_BATCH_SIZE} tasks can be updated at once` 
+      });
+    }
+
+    // Validate all taskIds are valid ObjectIds
+    const invalidIds = taskIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+    if (invalidIds.length > 0) {
+      return res.status(400).json({ 
+        message: "Invalid task ID format", 
+        invalidIds 
+      });
+    }
+
+    // Get agent ID from user (assuming email-based identification)
+    const userEmail = req.user?.email;
+    if (!userEmail || !userEmail.toLowerCase().endsWith("@agent.com")) {
+      return res.status(403).json({ 
+        message: "Only agents can perform bulk operations" 
+      });
+    }
+
+    // Find agent by email
+    const agent = await Agent.findOne({ 
+      email: userEmail.toLowerCase().trim() 
+    });
+
+    if (!agent) {
+      return res.status(404).json({ 
+        message: "Agent not found" 
+      });
+    }
+
+    // Find all tasks that belong to this agent
+    const tasks = await Task.find({ 
+      _id: { $in: taskIds },
+      agent: agent._id 
+    });
+
+    if (tasks.length === 0) {
+      return res.status(404).json({ 
+        message: "No tasks found or you don't have permission to update these tasks" 
+      });
+    }
+
+    // Check if all requested tasks were found (authorization check)
+    const foundTaskIds = tasks.map(t => t._id.toString());
+    const notFoundIds = taskIds.filter(id => !foundTaskIds.includes(id));
+    
+    if (notFoundIds.length > 0) {
+      return res.status(403).json({ 
+        message: "Some tasks were not found or you don't have permission to update them",
+        notFoundIds,
+        foundCount: foundTaskIds.length,
+        requestedCount: taskIds.length
+      });
+    }
+
+    // Prepare bulk write operations
+    const bulkOps = tasks.map(task => {
+      const update = {
+        $set: {
+          status: status,
+          updatedAt: new Date()
+        }
+      };
+
+      // Handle completedDate based on status
+      if (status === "completed") {
+        // Only set completedDate if it's not already set
+        if (!task.completedDate) {
+          update.$set.completedDate = new Date();
+        }
+      } else {
+        // If changing from completed to another status, clear completedDate
+        if (task.status === "completed") {
+          update.$set.completedDate = null;
+        }
+      }
+
+      return {
+        updateOne: {
+          filter: { _id: task._id },
+          update: update
+        }
+      };
+    });
+
+    // Execute bulk write
+    const bulkResult = await Task.bulkWrite(bulkOps);
+
+    // Fetch updated tasks for response
+    const updatedTasks = await Task.find({ 
+      _id: { $in: taskIds },
+      agent: agent._id 
+    }).populate("agent", "name email");
+
+    res.status(200).json({
+      message: `Successfully updated ${bulkResult.modifiedCount} task(s)`,
+      updatedCount: bulkResult.modifiedCount,
+      updatedTasks: updatedTasks
+    });
+  } catch (error) {
+    console.error("Bulk Update Task Status Error:", error);
+    
+    // Handle validation errors
+    if (error.name === "ValidationError") {
+      return res.status(400).json({ 
+        message: "Validation error", 
+        errors: error.errors 
+      });
+    }
+
+    res.status(500).json({ 
+      message: "Server error during bulk update operation" 
+    });
+  }
+};
+
+module.exports = { 
+  getTasks, 
+  getTasksByAgent, 
+  deleteTasks, 
+  updateTasks,
+  bulkDeleteTasks,
+  bulkUpdateTaskStatus
+}; // Export the functions for use in routes
